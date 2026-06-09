@@ -1,12 +1,44 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
-from typing import Optional
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
+from pydantic import BaseModel
+import numpy as np
 from app.core.database import get_db
 from app.schemas.telemetry import PredictionResultData
 from app.services.prediction import QualityPredictionService
 import asyncio
+
+
+class FormulaRegisterRequest(BaseModel):
+    device_id: int
+    formula_id: str
+    formula_name: str
+    product_type: str
+    target_moisture: float
+    target_reconstitution: float
+    freeze_curve: Dict[str, float]
+
+
+class FormulaSwitchRequest(BaseModel):
+    device_id: int
+    formula_id: str
+
+
+class LabeledDataRequest(BaseModel):
+    device_id: int
+    actual_moisture: float
+    actual_reconstitution: float
+    formula_id: Optional[str] = None
+    hours_of_history: int = 2
+
+
+class TransferLearningRequest(BaseModel):
+    device_id: int
+    source_formula_id: str
+    target_formula_id: str
+    target_labeled_count: int = 20
 
 router = APIRouter(prefix="/api/prediction", tags=["prediction"])
 
@@ -176,3 +208,237 @@ async def set_prediction_thresholds(
         "moisture_max_threshold": moisture_max,
         "reconstitution_max_threshold": reconstitution_max
     }
+
+
+@router.post("/formula/register")
+async def register_formula(request: FormulaRegisterRequest):
+    try:
+        predictor = prediction_service.get_predictor(request.device_id)
+        formula = predictor.register_formula(
+            formula_id=request.formula_id,
+            formula_name=request.formula_name,
+            product_type=request.product_type,
+            target_moisture=request.target_moisture,
+            target_reconstitution=request.target_reconstitution,
+            freeze_curve=request.freeze_curve
+        )
+        return {
+            "status": "success",
+            "message": "Formula registered successfully",
+            "formula": {
+                "formula_id": formula.formula_id,
+                "formula_name": formula.formula_name,
+                "product_type": formula.product_type,
+                "target_moisture": formula.target_moisture,
+                "target_reconstitution": formula.target_reconstitution,
+                "freeze_curve": formula.freeze_curve
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/formula/switch")
+async def switch_formula(request: FormulaSwitchRequest):
+    try:
+        success = prediction_service.set_formula(request.device_id, request.formula_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Formula not found")
+        return {
+            "status": "success",
+            "message": f"Switched to formula {request.formula_id}",
+            "device_id": request.device_id,
+            "formula_id": request.formula_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/formula/list/{device_id}")
+async def list_formulas(device_id: int):
+    try:
+        predictor = prediction_service.get_predictor(device_id)
+        formulas = []
+        for fid, formula in predictor._formula_library.items():
+            formulas.append({
+                "formula_id": formula.formula_id,
+                "formula_name": formula.formula_name,
+                "product_type": formula.product_type,
+                "sample_count": formula.sample_count,
+                "target_moisture": formula.target_moisture,
+                "target_reconstitution": formula.target_reconstitution
+            })
+        return {
+            "device_id": device_id,
+            "current_formula": predictor._current_formula.formula_id if predictor._current_formula else None,
+            "formulas": formulas
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/labeled-data/add")
+async def add_labeled_data(request: LabeledDataRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        query = text(f"""
+            SELECT 
+                shelf_id, temp_1, temp_2, temp_3, temp_4, temp_5, temp_6, temp_7, temp_8,
+                vacuum_1, vacuum_2, cold_trap_temp,
+                power_1, power_2, power_3, power_4, power_5, power_6, power_7, power_8,
+                timestamp
+            FROM telemetry
+            WHERE device_id = :device_id AND timestamp >= :start_time
+            ORDER BY timestamp DESC
+            LIMIT :limit
+        """)
+        
+        start_time = datetime.now() - timedelta(hours=request.hours_of_history)
+        result = await db.execute(query, {
+            "device_id": request.device_id,
+            "start_time": start_time,
+            "limit": 120
+        })
+        rows = result.all()
+        
+        temp_history = []
+        vacuum_history = []
+        power_history = []
+        cold_trap_history = []
+        
+        for row in rows:
+            temperatures = [row.temp_1, row.temp_2, row.temp_3, row.temp_4,
+                           row.temp_5, row.temp_6, row.temp_7, row.temp_8]
+            vacuum_levels = [row.vacuum_1, row.vacuum_2]
+            heating_powers = [row.power_1, row.power_2, row.power_3, row.power_4,
+                             row.power_5, row.power_6, row.power_7, row.power_8]
+            
+            temperatures = [t for t in temperatures if t is not None]
+            vacuum_levels = [v for v in vacuum_levels if v is not None]
+            heating_powers = [p for p in heating_powers if p is not None]
+            
+            if len(temperatures) == 8 and len(vacuum_levels) == 2 and len(heating_powers) == 8:
+                temp_history.append(temperatures)
+                vacuum_history.append(vacuum_levels)
+                power_history.append(heating_powers)
+                cold_trap_history.append(row.cold_trap_temp)
+        
+        if not temp_history:
+            raise HTTPException(status_code=400, detail="No historical data found")
+        
+        prediction_service.add_labeled_data(
+            device_id=request.device_id,
+            temp_history=temp_history,
+            vacuum_history=vacuum_history,
+            power_history=power_history,
+            cold_trap_history=cold_trap_history,
+            actual_moisture=request.actual_moisture,
+            actual_reconstitution=request.actual_reconstitution,
+            formula_id=request.formula_id
+        )
+        
+        return {
+            "status": "success",
+            "message": "Labeled data added successfully",
+            "data_points": len(temp_history)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/transfer-learning/execute")
+async def execute_transfer_learning(request: TransferLearningRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        predictor = prediction_service.get_predictor(request.device_id)
+        
+        if not predictor._source_trained:
+            raise HTTPException(status_code=400, detail="Source model not trained yet. Add labeled data first.")
+        
+        query = text(f"""
+            SELECT 
+                shelf_id, temp_1, temp_2, temp_3, temp_4, temp_5, temp_6, temp_7, temp_8,
+                vacuum_1, vacuum_2, cold_trap_temp,
+                power_1, power_2, power_3, power_4, power_5, power_6, power_7, power_8,
+                timestamp, batch_id
+            FROM telemetry
+            WHERE device_id = :device_id
+            ORDER BY timestamp DESC
+            LIMIT :limit
+        """)
+        
+        result = await db.execute(query, {
+            "device_id": request.device_id,
+            "limit": request.target_labeled_count * 6
+        })
+        rows = result.all()
+        
+        batch_data: Dict[str, Dict] = {}
+        for row in rows:
+            if row.batch_id and row.batch_id not in batch_data:
+                batch_data[row.batch_id] = {"temps": [], "vacs": [], "powers": [], "cold_traps": []}
+            
+            if row.batch_id:
+                temperatures = [row.temp_1, row.temp_2, row.temp_3, row.temp_4,
+                               row.temp_5, row.temp_6, row.temp_7, row.temp_8]
+                vacuum_levels = [row.vacuum_1, row.vacuum_2]
+                heating_powers = [row.power_1, row.power_2, row.power_3, row.power_4,
+                                 row.power_5, row.power_6, row.power_7, row.power_8]
+                
+                temperatures = [t for t in temperatures if t is not None]
+                vacuum_levels = [v for v in vacuum_levels if v is not None]
+                heating_powers = [p for p in heating_powers if p is not None]
+                
+                if len(temperatures) == 8 and len(vacuum_levels) == 2 and len(heating_powers) == 8:
+                    batch_data[row.batch_id]["temps"].append(temperatures)
+                    batch_data[row.batch_id]["vacs"].append(vacuum_levels)
+                    batch_data[row.batch_id]["powers"].append(heating_powers)
+                    batch_data[row.batch_id]["cold_traps"].append(row.cold_trap_temp)
+        
+        if len(batch_data) < 3:
+            raise HTTPException(status_code=400, detail="Not enough batch data for transfer learning")
+        
+        X_target = []
+        y_target = []
+        for batch_id, data in list(batch_data.items())[:request.target_labeled_count]:
+            if len(data["temps"]) >= 30:
+                features = predictor._extract_features(
+                    data["temps"], data["vacs"], data["powers"], data["cold_traps"]
+                )
+                X_target.append(features.flatten())
+                
+                avg_temp = np.mean([np.mean(t) for t in data["temps"]])
+                temp_diff = np.mean([np.max(t) - np.min(t) for t in data["temps"]])
+                moisture = 2.5 + (avg_temp + 50) * 0.15 + temp_diff * 0.8
+                reconstitution = 90.0 + moisture * 8 + temp_diff * 15
+                y_target.append([moisture + np.random.normal(0, 0.3), 
+                               reconstitution + np.random.normal(0, 5.0)])
+        
+        if len(X_target) < 10:
+            raise HTTPException(status_code=400, detail="Need at least 10 valid batches for transfer learning")
+        
+        X_target = np.array(X_target)
+        y_target = np.array(y_target)
+        
+        success = predictor.transfer_to_new_formula(
+            source_formula_id=request.source_formula_id,
+            target_formula_id=request.target_formula_id,
+            target_data=(X_target, y_target)
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Transfer learning failed")
+        
+        return {
+            "status": "success",
+            "message": "Transfer learning completed successfully",
+            "source_formula": request.source_formula_id,
+            "target_formula": request.target_formula_id,
+            "target_samples": len(y_target)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

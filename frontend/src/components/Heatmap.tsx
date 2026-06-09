@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { RealtimeData } from '@/types';
 
 interface HeatmapProps {
@@ -15,6 +15,13 @@ interface SensorPosition {
   index: number;
 }
 
+interface CacheKey {
+  width: number;
+  height: number;
+  minTemp: number;
+  maxTemp: number;
+}
+
 const Heatmap = ({
   data,
   tempDiffThreshold = 1.0,
@@ -22,8 +29,14 @@ const Heatmap = ({
   height = 200,
 }: HeatmapProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [hoveredSensor, setHoveredSensor] = useState<SensorPosition | null>(null);
   const [abnormalRegions, setAbnormalRegions] = useState<{ x: number; y: number; w: number; h: number }[]>([]);
+  
+  const lastDataRef = useRef<RealtimeData | null>(null);
+  const lastCacheKeyRef = useRef<CacheKey | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const pendingRedrawRef = useRef(false);
 
   const getTemperatureColor = useCallback((temp: number, minTemp: number, maxTemp: number) => {
     if (maxTemp === minTemp) {
@@ -52,7 +65,7 @@ const Heatmap = ({
     return 'rgb(255, 80, 80)';
   }, []);
 
-  const getSensorPositions = useCallback(() => {
+  const sensorPositions = useMemo(() => {
     const positions: SensorPosition[] = [];
     const cols = 4;
     const rows = 2;
@@ -95,12 +108,28 @@ const Heatmap = ({
     return regions;
   }, [data, tempDiffThreshold]);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  const hasSignificantChange = useCallback((newData: RealtimeData | null) => {
+    if (!lastDataRef.current && !newData) return false;
+    if (!lastDataRef.current || !newData) return true;
+    
+    const oldTemps = lastDataRef.current.temperatures;
+    const newTemps = newData.temperatures;
+    
+    for (let i = 0; i < 8; i++) {
+      if (Math.abs(oldTemps[i] - newTemps[i]) > 0.05) {
+        return true;
+      }
+    }
+    
+    if (Math.abs(lastDataRef.current.temperature_diff - newData.temperature_diff) > 0.05) {
+      return true;
+    }
+    
+    return false;
+  }, []);
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  const drawStaticLayer = useCallback((ctx: CanvasRenderingContext2D, cacheKey: CacheKey) => {
+    const { width, height, minTemp, maxTemp } = cacheKey;
 
     ctx.clearRect(0, 0, width, height);
 
@@ -125,6 +154,27 @@ const Heatmap = ({
       ctx.stroke();
     }
 
+    const legendWidth = 150;
+    const legendHeight = 15;
+    const legendX = width - legendWidth - 15;
+    const legendY = height - 35;
+
+    const legendGradient = ctx.createLinearGradient(legendX, legendY, legendX + legendWidth, legendY);
+    legendGradient.addColorStop(0, 'rgb(0, 100, 200)');
+    legendGradient.addColorStop(0.5, 'rgb(100, 220, 180)');
+    legendGradient.addColorStop(1, 'rgb(255, 80, 80)');
+    ctx.fillStyle = legendGradient;
+    ctx.fillRect(legendX, legendY, legendWidth, legendHeight);
+
+    ctx.fillStyle = '#94A3B8';
+    ctx.font = '10px Inter';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${minTemp.toFixed(1)}℃`, legendX, legendY + legendHeight + 12);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${maxTemp.toFixed(1)}℃`, legendX + legendWidth, legendY + legendHeight + 12);
+  }, []);
+
+  const drawDynamicLayer = useCallback((ctx: CanvasRenderingContext2D) => {
     if (!data) {
       ctx.fillStyle = '#64748B';
       ctx.font = '14px Inter';
@@ -133,7 +183,7 @@ const Heatmap = ({
       return;
     }
 
-    const { positions, sensorSize } = getSensorPositions();
+    const { positions, sensorSize } = sensorPositions;
     const temps = data.temperatures;
     const minTemp = Math.min(...temps);
     const maxTemp = Math.max(...temps);
@@ -174,25 +224,6 @@ const Heatmap = ({
       ctx.fillRect(region.x, region.y, region.w, region.h);
     });
 
-    const legendWidth = 150;
-    const legendHeight = 15;
-    const legendX = width - legendWidth - 15;
-    const legendY = height - 35;
-
-    const legendGradient = ctx.createLinearGradient(legendX, legendY, legendX + legendWidth, legendY);
-    legendGradient.addColorStop(0, 'rgb(0, 100, 200)');
-    legendGradient.addColorStop(0.5, 'rgb(100, 220, 180)');
-    legendGradient.addColorStop(1, 'rgb(255, 80, 80)');
-    ctx.fillStyle = legendGradient;
-    ctx.fillRect(legendX, legendY, legendWidth, legendHeight);
-
-    ctx.fillStyle = '#94A3B8';
-    ctx.font = '10px Inter';
-    ctx.textAlign = 'left';
-    ctx.fillText(`${minTemp.toFixed(1)}℃`, legendX, legendY + legendHeight + 12);
-    ctx.textAlign = 'right';
-    ctx.fillText(`${maxTemp.toFixed(1)}℃`, legendX + legendWidth, legendY + legendHeight + 12);
-
     ctx.textAlign = 'left';
     ctx.fillStyle = '#06B6D4';
     ctx.font = '11px Inter';
@@ -205,7 +236,90 @@ const Heatmap = ({
       ctx.fillStyle = '#10B981';
       ctx.fillText('✓ 均匀', 120, height - 20);
     }
-  }, [data, width, height, getSensorPositions, getTemperatureColor, detectAbnormalRegions, tempDiffThreshold]);
+  }, [data, sensorPositions, getTemperatureColor, detectAbnormalRegions, width, height, tempDiffThreshold]);
+
+  const render = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const temps = data?.temperatures || [];
+    const minTemp = temps.length > 0 ? Math.min(...temps) : -50;
+    const maxTemp = temps.length > 0 ? Math.max(...temps) : -40;
+
+    const currentCacheKey: CacheKey = { width, height, minTemp, maxTemp };
+
+    let needsStaticRedraw = false;
+    if (!lastCacheKeyRef.current ||
+        lastCacheKeyRef.current.width !== currentCacheKey.width ||
+        lastCacheKeyRef.current.height !== currentCacheKey.height ||
+        lastCacheKeyRef.current.minTemp !== currentCacheKey.minTemp ||
+        lastCacheKeyRef.current.maxTemp !== currentCacheKey.maxTemp) {
+      needsStaticRedraw = true;
+    }
+
+    if (!offscreenCanvasRef.current ||
+        offscreenCanvasRef.current.width !== width ||
+        offscreenCanvasRef.current.height !== height) {
+      offscreenCanvasRef.current = document.createElement('canvas');
+      offscreenCanvasRef.current.width = width;
+      offscreenCanvasRef.current.height = height;
+      needsStaticRedraw = true;
+    }
+
+    const offscreenCtx = offscreenCanvasRef.current.getContext('2d');
+    if (offscreenCtx && needsStaticRedraw) {
+      drawStaticLayer(offscreenCtx, currentCacheKey);
+      lastCacheKeyRef.current = currentCacheKey;
+    }
+
+    ctx.clearRect(0, 0, width, height);
+    
+    if (offscreenCtx) {
+      ctx.drawImage(offscreenCanvasRef.current, 0, 0);
+    }
+
+    drawDynamicLayer(ctx);
+
+    lastDataRef.current = data;
+    pendingRedrawRef.current = false;
+  }, [data, width, height, drawStaticLayer, drawDynamicLayer]);
+
+  const scheduleRedraw = useCallback(() => {
+    if (pendingRedrawRef.current) return;
+    
+    pendingRedrawRef.current = true;
+    
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+    
+    animationFrameRef.current = requestAnimationFrame(() => {
+      render();
+    });
+  }, [render]);
+
+  useEffect(() => {
+    if (!hasSignificantChange(data)) {
+      return;
+    }
+
+    scheduleRedraw();
+  }, [data, hasSignificantChange, scheduleRedraw]);
+
+  useEffect(() => {
+    scheduleRedraw();
+  }, [width, height, scheduleRedraw]);
+
+  useEffect(() => {
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, []);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -215,14 +329,14 @@ const Heatmap = ({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    const { positions, sensorSize } = getSensorPositions();
+    const { positions, sensorSize } = sensorPositions;
     const hovered = positions.find(pos =>
       x >= pos.x && x <= pos.x + sensorSize &&
       y >= pos.y && y <= pos.y + sensorSize
     );
 
     setHoveredSensor(hovered || null);
-  }, [getSensorPositions]);
+  }, [sensorPositions]);
 
   return (
     <div className="relative inline-block">

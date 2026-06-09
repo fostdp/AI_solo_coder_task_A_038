@@ -1,12 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
+from pydantic import BaseModel
 from app.core.database import get_db
 from app.schemas.telemetry import ControlCommand, ControlModeUpdate
 from app.services.control import TemperatureUniformityController
 import asyncio
+
+
+class BatchResetRequest(BaseModel):
+    device_id: int
+    batch_id: Optional[str] = None
+    initial_temperatures: Optional[List[float]] = None
 
 router = APIRouter(prefix="/api/control", tags=["control"])
 
@@ -180,3 +187,53 @@ async def get_control_status(device_id: int):
         "auto_mode": auto_mode.get(device_id, True),
         "temp_diff_threshold": controller.temp_diff_threshold
     }
+
+
+@router.post("/batch/reset")
+async def reset_batch(request: BatchResetRequest):
+    try:
+        controller.reset_batch(
+            batch_id=request.batch_id,
+            initial_temperatures=request.initial_temperatures
+        )
+        return {
+            "status": "success",
+            "message": "Batch reset successfully",
+            "device_id": request.device_id,
+            "batch_id": controller._current_batch_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/batch/metrics/{device_id}")
+async def get_batch_metrics(device_id: int):
+    try:
+        metrics = controller.get_control_metrics()
+        return {
+            "status": "success",
+            "device_id": device_id,
+            "metrics": metrics
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/forgetting-factor")
+async def set_forgetting_factor(device_id: int, factor: float):
+    try:
+        if factor < 0.8 or factor > 0.99:
+            raise HTTPException(status_code=400, detail="Factor must be between 0.8 and 0.99")
+        
+        for key, ilc in controller.ilc_controllers.items():
+            ilc.set_forgetting_factor(factor)
+        
+        return {
+            "status": "success",
+            "device_id": device_id,
+            "forgetting_factor": factor
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
