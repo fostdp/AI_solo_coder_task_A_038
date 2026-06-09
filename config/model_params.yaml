@@ -1,0 +1,83 @@
+# 质量预测模型参数
+# PLS回归和迁移学习配置
+
+pls_model:
+  n_components: 6
+  feature_names: [
+    'avg_temp', 'temp_std', 'temp_diff',
+    'avg_vacuum', 'vacuum_std',
+    'avg_power', 'power_std',
+    'cold_trap_temp',
+    'drying_rate_10min', 'drying_rate_30min', 'drying_rate_60min'
+  ]
+  target_names: ['moisture_content', 'reconstitution_time']
+  # 置信度计算
+  base_confidence: 0.85
+  min_confidence: 0.5
+  max_confidence: 0.99
+
+transfer_learning:
+  # 源域-目标域混合系数
+  transfer_alpha: 0.7
+  # 相似度阈值（低于此值不使用迁移）
+  similarity_threshold: 0.3
+  # 目标域最小样本数
+  min_target_samples: 10
+  # 特征空间归一化
+  normalize_features: true
+
+adaptive_update:
+  # 初始适应率
+  initial_adaptation_rate: 0.1
+  # 最小适应率
+  min_adaptation_rate: 0.05
+  # 最大适应率
+  max_adaptation_rate: 0.3
+  # 适应率衰减系数
+  adaptation_decay: 0.95
+  # 触发自适应更新的最小样本数
+  min_samples_for_update: 30
+  # 更新时使用的近期样本窗口
+  recent_samples_window: 100
+
+concept_drift:
+  # 漂移检测阈值
+  drift_threshold: 0.05
+  # KS检验显著性水平
+  significance_level: 0.01
+  # 漂移检测参考样本数
+  reference_window_size: 100
+  # 漂移后适应率调整
+  drift_adaptation_increment: 0.02
+
+# 配方库
+formulas:
+  - formula_id: "FORMULA-001"
+    formula_name: "标准单抗"
+    product_type: "mAb"
+    target_moisture: 3.0
+    target_reconstitution: 120.0
+    freeze_curve:
+      freezing_rate: -1.0
+      primary_temp: -40.0
+      secondary_temp: 25.0
+
+  - formula_id: "FORMULA-002"
+    formula_name: "重组蛋白"
+    product_type: "Protein"
+    target_moisture: 2.5
+    target_reconstitution: 100.0
+    freeze_curve:
+      freezing_rate: -0.8
+      primary_temp: -45.0
+      secondary_temp: 30.0
+
+  - formula_id: "FORMULA-003"
+    formula_name: "疫苗制剂"
+    product_type: "Vaccine"
+    target_moisture: 3.5
+    target_reconstitution: 150.0
+    freeze_curve:
+      freezing_rate: -1.5
+      primary_temp: -35.0
+      secondary_temp: 20.0

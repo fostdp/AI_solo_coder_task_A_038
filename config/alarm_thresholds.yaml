@@ -1,0 +1,104 @@
+# 告警阈值配置
+# 各级别告警的触发条件
+
+# 全局阈值
+global:
+  # 告警冷却期（秒），防止抖动
+  cooldown_seconds: 30
+  # 历史告警缓存数量
+  history_cache_size: 1000
+  # 当前告警缓存数量
+  active_cache_size: 100
+
+# 温度告警
+temperature:
+  # 搁板温差阈值（℃）
+  diff_threshold: 1.0
+  # 温差超过此值为严重告警
+  critical_multiplier: 1.5
+  # 温度范围检查
+  min_allowed: -60.0
+  max_allowed: -40.0
+  # 温度突变检测（℃/min）
+  max_change_rate: 2.0
+
+# 真空度告警
+vacuum:
+  # 真空度过低阈值（Pa）- 严重告警
+  min_threshold: 0.1
+  # 真空度过高阈值（Pa）- 警告
+  max_threshold: 100.0
+  # 真空度突变检测（Pa/min）
+  max_change_rate: 50.0
+
+# 冷阱温度告警
+cold_trap:
+  # 冷阱温度过高阈值（℃）
+  max_threshold: -50.0
+  # 冷阱温度过低阈值（℃）
+  min_threshold: -85.0
+  # 温度上升速率检测（℃/min）
+  max_rise_rate: 1.0
+
+# 质量预测告警
+quality:
+  # 水分含量阈值（%）
+  moisture_max: 3.0
+  # 复溶时间阈值（s）
+  reconstitution_max: 120.0
+  # 预测置信度低于此值额外警告
+  min_confidence: 0.7
+
+# 告警级别定义
+severity_levels:
+  warning:
+    priority: 2
+    color: "#F59E0B"
+    notification: true
+    auto_acknowledge: false
+    acknowledge_timeout: 3600  # 1小时后自动确认
+
+  critical:
+    priority: 1
+    color: "#EF4444"
+    notification: true
+    auto_acknowledge: false
+    acknowledge_timeout: 7200  # 2小时后自动确认
+    escalation_required: true
+    escalation_timeout: 900  # 15分钟未确认升级
+
+# MQTT推送配置
+mqtt_publisher:
+  topic: "pharmacy/mes/alarm"
+  qos: 1
+  retain: false
+  # 消息格式
+  message_format:
+    include_source: true
+    include_version: true
+    timestamp_format: "iso8601"
+  # 批量推送
+  batch_enabled: false
+  batch_max_size: 10
+  batch_max_wait_ms: 1000
+
+# 告警通知渠道
+notification_channels:
+  - type: mqtt
+    enabled: true
+    name: "MES系统"
+  - type: email
+    enabled: false
+    name: "邮件通知"
+  - type: sms
+    enabled: false
+    name: "短信通知"
+
+# 自动告警抑制
+auto_suppression:
+  # 同一设备同类型告警连续N次后抑制
+  consecutive_alarm_threshold: 5
+  # 抑制时间（秒）
+  suppression_duration: 300
+  # 抑制期间只发送摘要
+  summary_interval: 60

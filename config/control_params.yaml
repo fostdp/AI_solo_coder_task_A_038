@@ -1,0 +1,57 @@
+# 温度均匀性控制参数
+# 控制算法参数配置
+fuzzy_control:
+  target_temp: -50.0
+  error_scale: 1.0
+  change_rate_scale: 1.0
+  output_scale: 5.0
+  # 模糊规则权重
+  rule_weights:
+    error_range: [-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0]
+    change_rate_range: [-1.0, -0.5, 0.0, 0.5, 1.0]
+    output_matrix: [
+      [-8, -6, -4, -2, 0],
+      [-6, -4, -2, 0, 2],
+      [-4, -2, 0, 2, 4],
+      [-2, 0, 0, 0, 2],
+      [-2, 0, 2, 4, 6],
+      [0, 2, 4, 6, 8],
+      [2, 4, 6, 8, 10]
+    ]
+
+ilc_control:
+  n_heaters: 8
+  learning_rate: 0.1
+  forgetting_factor: 0.95
+  max_history: 100
+  # 积分和微分项系数
+  derivative_gain: 0.05
+  integral_gain: 0.01
+  # 批次管理
+  batch_change_threshold: 5.0
+  batch_timeout_hours: 4
+  warmup_cycles: 10
+  knowledge_base_size: 20
+
+power_allocation:
+  # 模糊控制和ILC的混合权重
+  fuzzy_weight: 0.6
+  ilc_weight: 0.4
+  # 增益调度
+  gain_scheduling:
+    low_diff: 0.5
+    low_diff_gain: 0.3
+    medium_diff: 0.8
+    medium_diff_gain: 0.7
+    high_diff_gain: 1.0
+  # 输出约束
+  min_adjustment: -20.0
+  max_adjustment: 20.0
+  min_power: 0.0
+  max_power: 100.0
+
+temperature_limits:
+  target: -50.0
+  min_allowed: -60.0
+  max_allowed: -40.0
+  uniformity_threshold: 1.0
