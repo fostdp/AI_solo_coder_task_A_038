@@ -1,428 +1,432 @@
-# 智慧油田注水开发动态调控系统
+# 生物制药冻干机搁板温度均匀性控制与产品质量预测系统
 
-## 项目概述
+## 系统概述
 
-本系统是一套完整的智慧油田注水开发动态调控全栈应用，实现油田注水井和采油井的实时数据采集、可视化展示、智能调配优化和告警管理。
+本系统是一套完整的生物制药冻干机监控解决方案，实现了10台冻干机、50层搁板的实时温度监控、均匀性控制和产品质量预测。
 
-### 业务场景
-- **注水井**：300口，每日上报注水量、注水压力、吸水指数
-- **采油井**：500口，每日上报产液量、产油量、含水率、动液面
-- **数据传输**：4G DTU通过MQTT协议上报
-- **核心目标**：基于注采平衡和水驱特征曲线，优化日注水量，减缓含水率上升，最大化产油量
-
----
-
-## 技术架构
+## 系统架构
 
 ```
-┌─────────────────┐    MQTT    ┌─────────────────┐    HTTP    ┌─────────────────┐
-│  4G DTU 模拟器  │───────────►│  SpringBoot 后端│◄───────────│   Web 前端      │
-│  (Python)       │            │  (Java 17)      │            │  (Canvas+Leaflet)│
-└─────────────────┘            └────────┬────────┘            └─────────────────┘
-                                        │
-                                        ▼
-                              ┌─────────────────┐
-                              │ PostgreSQL      │
-                              │  + PostGIS      │
-                              └─────────────────┘
+┌─────────────────┐     Profinet     ┌─────────────────┐     MQTT      ┌─────────────┐
+│ Profinet 模拟器 │ ───────────────> │  FastAPI 后端   │ ───────────> │   MES系统   │
+└─────────────────┘                  └─────────────────┘               └─────────────┘
+                                             │
+                                             │ HTTP/WebSocket
+                                             ▼
+                                  ┌─────────────────┐
+                                  │   React 前端     │
+                                  │  - Canvas热力图  │
+                                  │  - ECharts曲线  │
+                                  └─────────────────┘
+                                             │
+                                             ▼
+                                  ┌─────────────────┐
+                                  │  TimescaleDB    │
+                                  │  (PostgreSQL)   │
+                                  └─────────────────┘
 ```
 
-### 核心技术栈
+## 核心功能
 
-#### 后端
-- **框架**：Spring Boot 3.2.0
-- **ORM**：Spring Data JPA + Hibernate Spatial 6.4.0
-- **空间计算**：JTS (Java Topology Suite) 1.19.0
-- **优化算法**：Apache Commons Math 3.6.1 (Simplex线性规划)
-- **消息队列**：Eclipse Paho MQTT Client
-- **数据库**：PostgreSQL 14+ + PostGIS 3.2+
-- **定时任务**：Spring @Scheduled
+### 1. 数据采集
+- 10台冻干机，每台5层搁板
+- 每层8个温度传感器 + 2个真空度传感器
+- 每10秒通过Profinet协议上报数据
+- 冷阱温度、加热功率同步采集
 
-#### 前端
-- **地图框架**：Leaflet 1.9.4
-- **绘制引擎**：HTML5 Canvas
-- **图表库**：Chart.js 4.4.0
-- **HTTP客户端**：Axios
-- **样式**：原生CSS3
+### 2. 温度均匀性控制
+- **模糊控制算法**：35条模糊规则，7×5输入空间
+  - 输入：温度误差、温度变化率
+  - 输出：功率调整量
+  - 去模糊化：重心法
+- **迭代学习控制**：基于批次数据迭代优化
+- **控制目标**：搁板间温差 < 1℃
 
-#### 模拟器
-- **语言**：Python 3.8+
-- **MQTT客户端**：paho-mqtt
+### 3. 产品质量预测
+- **偏最小二乘回归(PLS)**：11个特征，6个主成分
+- 预测指标：
+  - 水分含量（阈值：< 3.0%）
+  - 复溶时间（阈值：< 5.0min）
+- 置信度评估
+- 不合格预警
 
----
+### 4. 告警系统
+- 温差超限（> 1.0℃）
+- 真空度异常（< 0.0001Pa 或 > 0.1Pa）
+- 冷阱温度过高（> -50℃）
+- 质量预测不合格
+- MQTT推送至MES系统
+
+## 技术栈
+
+### 后端
+- **框架**: FastAPI 0.104+
+- **数据库**: TimescaleDB (PostgreSQL扩展)
+- **ORM**: SQLAlchemy 2.0 (异步)
+- **驱动**: asyncpg
+- **机器学习**: scikit-learn, numpy, scipy
+- **消息队列**: paho-mqtt
+- **算法**: 模糊控制、迭代学习控制、PLS回归
+
+### 前端
+- **框架**: React 18 + TypeScript
+- **构建工具**: Vite 5
+- **样式**: Tailwind CSS 3
+- **状态管理**: Zustand
+- **图表**: ECharts 5
+- **绘图**: Canvas 2D API
+- **图标**: Lucide React
+- **HTTP**: Axios
 
 ## 项目结构
 
 ```
-AI_solo_coder_task_A_035/
+AI_solo_coder_task_A_038/
 ├── database/
-│   └── init_schema.sql          # PostgreSQL+PostGIS数据库初始化脚本
+│   └── init_timescaledb.sql          # 数据库初始化脚本
 ├── backend/
-│   ├── pom.xml                  # Maven配置
-│   └── src/main/
-│       ├── resources/
-│       │   └── application.yml  # 应用配置文件
-│       └── java/com/oilfield/
-│           ├── SmartWaterFloodingApplication.java
-│           ├── entity/          # 实体类（7个）
-│           ├── repository/      # 数据访问层（7个）
-│           ├── service/         # 业务逻辑层
-│           │   ├── AllocationOptimizationService.java  # 调配优化核心
-│           │   ├── AlarmService.java                   # 告警服务
-│           │   ├── BlockSummaryService.java            # 区块汇总
-│           │   └── MqttDataListener.java               # MQTT数据监听
-│           └── controller/      # REST API控制层（6个）
+│   ├── app/
+│   │   ├── main.py                   # FastAPI主应用
+│   │   ├── core/
+│   │   │   ├── config.py             # 配置管理
+│   │   │   └── database.py           # 数据库连接
+│   │   ├── models/
+│   │   │   └── models.py             # SQLAlchemy ORM模型
+│   │   ├── schemas/
+│   │   │   └── telemetry.py          # Pydantic数据模型
+│   │   ├── services/
+│   │   │   ├── control.py            # 温度控制服务
+│   │   │   ├── prediction.py         # 质量预测服务
+│   │   │   ├── alarm.py              # 告警检测服务
+│   │   │   └── mqtt.py               # MQTT发布服务
+│   │   └── api/
+│   │       ├── devices.py            # 设备API
+│   │       ├── data.py               # 数据API
+│   │       ├── control.py            # 控制API
+│   │       ├── prediction.py         # 预测API
+│   │       └── alarm.py              # 告警API
+│   ├── profinet_simulator.py         # Profinet模拟器
+│   ├── requirements.txt              # Python依赖
+│   └── .env                          # 环境变量
 ├── frontend/
-│   ├── index.html               # 主页面
-│   ├── css/
-│   │   └── style.css            # 样式文件
-│   └── js/
-│       ├── config.js            # 配置文件
-│       ├── api.js               # API调用封装
-│       ├── map.js               # 地图管理
-│       ├── charts.js            # 图表管理
-│       └── app.js               # 主应用逻辑
-├── simulator/
-│   ├── dtu_simulator.py         # 4G DTU模拟器
-│   └── requirements.txt         # Python依赖
-└── README.md                    # 本文档
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── Heatmap.tsx           # Canvas温度热力图
+│   │   │   ├── VacuumChart.tsx       # 真空度ECharts曲线
+│   │   │   ├── DeviceOverview.tsx    # 设备概览
+│   │   │   ├── ControlPanel.tsx      # 功率控制面板
+│   │   │   ├── QualityPrediction.tsx # 质量预测面板
+│   │   │   └── AlarmPanel.tsx        # 告警面板
+│   │   ├── services/
+│   │   │   └── api.ts                # API服务
+│   │   ├── store/
+│   │   │   └── index.ts              # Zustand状态管理
+│   │   ├── types/
+│   │   │   └── index.ts              # TypeScript类型定义
+│   │   ├── App.tsx                   # 主应用组件
+│   │   ├── main.tsx                  # 入口文件
+│   │   └── index.css                 # 全局样式
+│   ├── package.json                  # NPM依赖
+│   ├── vite.config.ts                # Vite配置
+│   ├── tailwind.config.js            # Tailwind配置
+│   ├── tsconfig.json                 # TypeScript配置
+│   └── .env                          # 环境变量
+├── start_backend.bat                 # 后端启动脚本(Windows)
+├── start_frontend.bat                # 前端启动脚本(Windows)
+├── start_all.bat                     # 一键启动脚本(Windows)
+└── README.md                         # 项目说明
 ```
 
----
+## 快速开始
 
-## 核心功能模块
+### 前置要求
+- Python 3.10+
+- Node.js 18+
+- PostgreSQL 13+ with TimescaleDB extension
+- MQTT Broker (如 Mosquitto)
 
-### 1. 数据库设计
+### 1. 数据库初始化
 
-#### 核心数据表
-| 表名 | 说明 | 关键字段 |
-|------|------|----------|
-| `wells` | 井基础信息 | well_id, well_type, location(Point), block_name, design_pressure |
-| `water_injection_data` | 注水井日数据 | water_volume, injection_pressure, absorption_index |
-| `production_data` | 采油井日数据 | fluid_volume, oil_volume, water_cut, fluid_level |
-| `injection_production_relation` | 注采对应关系 | injection_well_id, production_well_id, effectiveness_type, effectiveness_degree |
-| `allocation_suggestion` | 调配建议 | current_water_volume, suggested_water_volume, adjustment_direction |
-| `alarms` | 告警信息 | alarm_level, alarm_type, alarm_message, acknowledged |
-| `block_daily_summary` | 区块日汇总 | daily_oil_production, daily_water_injection, comprehensive_water_cut |
-| `water_flood_curve` | 水驱曲线 | cumulative_water_injection, cumulative_oil_production, curve_slope |
+```sql
+-- 创建数据库
+CREATE DATABASE freeze_dryer_db;
 
-#### 空间特性
-- PostGIS Geometry类型存储井位坐标（Point, SRID=4326）
-- 空间索引加速地理位置查询
-- 支持空间距离计算、缓冲区分析
+-- 连接到数据库
+\c freeze_dryer_db
 
-### 2. 注水调配优化模型
+-- 创建TimescaleDB扩展
+CREATE EXTENSION IF NOT EXISTS timescaledb;
 
-#### 算法原理
-基于**注采平衡原理**和**水驱特征曲线**，使用**线性规划（单纯形法）**求解最优解。
-
-#### 水驱特征曲线
-```
-lg(Lp) = a + b * lg(Np)
-其中：
-- Lp: 累计产液量
-- Np: 累计产油量
-- a, b: 回归系数
+-- 执行初始化脚本
+\i database/init_timescaledb.sql
 ```
 
-#### 目标函数
-```
-Maximize: Σ(Wi * Ki) - λ * Σ(ΔWi)
-约束条件：
-- Σ(Wi) = W_total （注采平衡）
-- Wi_min ≤ Wi ≤ Wi_max （单井上下限）
-- ΔWi ≤ 0.2 * Wi_current （增幅≤20%）
-- ΔWi ≥ -0.3 * Wi_current （降幅≤30%）
-```
+### 2. 后端启动
 
-### 3. 两级告警系统
-
-| 告警级别 | 触发条件 | 告警类型 | 推送方式 |
-|---------|----------|----------|----------|
-| **一级（水淹预警）** | 采油井含水率月上升 > 5% | WATER_CUT_RISE | MQTT + 前端展示 |
-| **二级（井筒异常）** | 注水井压力 > 设计压力 * 80% | PRESSURE_ANOMALY | MQTT + 前端展示 |
-
-### 4. 前端可视化
-
-#### 井位绘制
-- **注水井**：蓝色圆圈，带"注"字标识
-- **采油井**：红色三角，带"采"字标识
-- **注采连线**：颜色根据受效程度
-  - 绿色：高效受效（>70%）
-  - 黄色：中等受效（40%-70%）
-  - 红色：无效受效（<40%）
-
-#### 详情面板
-点击井位弹出，包含：
-- 井基础信息
-- 近90天生产趋势曲线（Chart.js）
-- 注采对应分析图
-- 最新调配建议（注水井）
-- 注采对应关系列表
-
-#### 核心指标
-- 区块日产油量（t）
-- 区块日注水量（m³）
-- 综合含水率（%）
-
----
-
-## 部署说明
-
-### 1. 数据库部署
-
-#### 系统要求
-- PostgreSQL 14+
-- PostGIS 3.2+
-
-#### 初始化步骤
-```bash
-# 1. 创建数据库
-createdb -U postgres oilfield_db
-
-# 2. 启用PostGIS扩展
-psql -U postgres -d oilfield_db -c "CREATE EXTENSION postgis;"
-
-# 3. 执行初始化脚本
-psql -U postgres -d oilfield_db -f database/init_schema.sql
-```
-
-### 2. 后端部署
-
-#### 系统要求
-- JDK 17+
-- Maven 3.8+
-
-#### 配置文件
-修改 `backend/src/main/resources/application.yml`：
-```yaml
-spring:
-  datasource:
-    url: jdbc:postgresql://localhost:5432/oilfield_db
-    username: postgres
-    password: your_password
-
-mqtt:
-  broker: tcp://localhost:1883
-  username: admin
-  password: admin
-```
-
-#### 启动命令
 ```bash
 cd backend
-mvn clean package
-java -jar target/smart-water-flooding-1.0.0.jar
-```
-
-### 3. MQTT Broker部署
-使用EMQX或Mosquitto：
-```bash
-# Docker方式启动EMQX
-docker run -d --name emqx -p 1883:1883 -p 8083:8083 -p 8883:8883 emqx/emqx:5.0
-```
-
-### 4. 前端部署
-
-#### 系统要求
-- Node.js 16+ 或任意HTTP服务器
-
-#### 启动方式
-```bash
-# 方式1：使用Python启动
-cd frontend
-python -m http.server 8080
-
-# 方式2：使用Nginx
-# 将frontend目录复制到nginx/html下
-```
-
-访问地址：`http://localhost:8080`
-
-### 5. DTU模拟器部署
-
-#### 安装依赖
-```bash
-cd simulator
 pip install -r requirements.txt
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-#### 运行模式
+### 3. 前端启动
 
-**单日数据上报**：
 ```bash
-python dtu_simulator.py --mode daily --end-date 2024-01-01
+cd frontend
+npm install
+npm run dev
 ```
 
-**历史数据回填**：
+### 4. Profinet模拟器启动
+
 ```bash
-python dtu_simulator.py --mode backfill --start-date 2024-01-01 --end-date 2024-03-31 --speed 5.0
+cd backend
+python profinet_simulator.py
 ```
 
-**实时模拟**：
+### 5. 一键启动（Windows）
+
 ```bash
-python dtu_simulator.py --mode realtime
+# 启动所有服务
+start_all.bat
 ```
 
----
+## API文档
 
-## REST API 接口
+启动后端后访问：
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
 
-### 井信息管理
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/wells` | 获取井列表 |
-| GET | `/api/wells/{id}` | 获取单井详情 |
-| GET | `/api/wells/{id}/trend?days=90` | 获取井生产趋势 |
-| GET | `/api/wells/blocks` | 获取区块列表 |
+### 主要API端点
 
-### 生产数据
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/data/report` | 生产数据上报（MQTT同时支持） |
-| GET | `/api/data/injection/latest` | 获取最新注水数据 |
-| GET | `/api/data/production/latest` | 获取最新采油数据 |
+#### 设备管理
+- `GET /api/devices` - 获取所有设备
+- `GET /api/devices/{id}` - 获取设备详情
+- `GET /api/devices/{id}/shelves` - 获取设备搁板列表
 
-### 区块汇总
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/summary/core-indicators?block={block}` | 获取核心指标 |
-| GET | `/api/summary/history?days=30` | 获取历史汇总 |
+#### 数据采集
+- `POST /api/data/telemetry` - 上报遥测数据
+- `GET /api/data/realtime/{device_id}` - 获取实时数据
+- `GET /api/data/history` - 获取历史数据
+- `GET /api/data/stats/{device_id}` - 获取统计数据
 
-### 告警管理
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/alarms` | 获取告警列表 |
-| PUT | `/api/alarms/{id}/acknowledge` | 确认告警 |
-| POST | `/api/alarms/check` | 手动触发告警检查 |
+#### 功率控制
+- `POST /api/control/power` - 发送功率控制指令
+- `PUT /api/control/mode` - 设置控制模式（自动/手动）
+- `GET /api/control/calculate/{device_id}/{shelf_id}` - 计算功率调整量
+- `GET /api/control/status/{device_id}` - 获取控制状态
 
-### 调配优化
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/allocation/latest` | 获取最新调配建议 |
-| POST | `/api/allocation/run` | 手动执行调配优化 |
-| GET | `/api/allocation/history` | 获取历史调配建议 |
+#### 质量预测
+- `POST /api/prediction/quality` - 执行质量预测
+- `GET /api/prediction/result/{device_id}` - 获取预测结果
+- `GET /api/prediction/model/{device_id}` - 获取模型信息
 
-### 注采关系
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/relations/map-data` | 获取地图连线数据 |
-| GET | `/api/relations/well/{wellId}` | 获取井的注采关系 |
+#### 告警管理
+- `GET /api/alarm/current` - 获取当前告警
+- `GET /api/alarm/history` - 获取历史告警
+- `POST /api/alarm/acknowledge` - 确认告警
+- `POST /api/alarm/check` - 手动检测告警
+- `GET /api/alarm/mqtt/status` - 获取MQTT连接状态
 
----
+## 前端功能
 
-## 定时任务配置
+### 温度热力图
+- Canvas绘制8个传感器温度分布
+- 颜色渐变：蓝→绿→黄→红
+- 温度不均匀区域（温差>1℃）用红色虚线框标注
+- 鼠标悬停显示精确温度值
+- 实时显示温差和均匀性状态
 
-| 任务 | 频率 | 说明 |
-|------|------|------|
-| 区块日汇总 | 每日 00:10 | 计算上一日区块汇总数据 |
-| 告警检查 | 每日 08:00 | 检查两级告警条件 |
-| 调配优化 | 每周一 02:00 | 生成周度注水调配建议 |
+### 真空度曲线
+- ECharts动态折线图
+- 5层搁板数据同时展示
+- 支持缩放、平移
+- 实时数据更新（5秒间隔）
+- 数据滑块浏览历史
 
-可在 `application.yml` 中配置：
-```yaml
-scheduling:
-  enabled: true
-  summary-cron: "0 10 0 * * ?"
-  alarm-cron: "0 0 8 * * ?"
-  allocation-cron: "0 0 2 ? * MON"
+### 功率控制面板
+- 自动/手动模式切换
+- 8个加热丝独立功率调整（滑块）
+- 智能计算按钮（调用后端模糊控制算法）
+- 阈值设置
+
+### 质量预测面板
+- SVG仪表盘展示水分含量和复溶时间
+- 置信度进度条
+- 历史预测记录
+- 阈值设置
+- 不合格预警
+
+### 告警面板
+- 实时告警列表
+- 按状态筛选（全部/未处理/已确认）
+- 严重级别标识
+- 一键确认功能
+- 告警详情展示
+
+## 算法说明
+
+### 模糊控制算法
+
+**输入变量**：
+- 温度误差 e = T_set - T_current，范围：[-5, 5]℃
+- 温度变化率 Δe，范围：[-0.5, 0.5]℃/s
+
+**输出变量**：
+- 功率调整量 ΔP，范围：[-10, 10]%
+
+**模糊集合**：
+- 温度误差：NB, NM, NS, ZE, PS, PM, PB (7个)
+- 温度变化率：NB, NS, ZE, PS, PB (5个)
+- 输出：NB, NM, NS, ZE, PS, PM, PB (7个)
+
+**模糊规则**：共35条，示例：
+```
+IF e = NB AND Δe = PB THEN ΔP = PB
+IF e = NB AND Δe = PS THEN ΔP = PB
+IF e = NM AND Δe = ZE THEN ΔP = PM
+...
 ```
 
----
+**去模糊化**：重心法
 
-## 数据格式
+### 迭代学习控制
 
-### MQTT数据上报格式
+**控制律**：
+```
+u_{k+1}(t) = u_k(t) + Γ * e_k(t) + Φ * Δe_k(t)
+```
+- u_k(t): 第k批次t时刻的控制输入
+- e_k(t): 第k批次的跟踪误差
+- Γ, Φ: 学习增益矩阵
 
-**主题**：`oilfield/well/data`
+### PLS回归预测
 
-**注水井数据**：
+**特征变量**（11个）：
+1. 平均温度
+2. 温度标准差
+3. 最大温差
+4. 平均真空度
+5. 真空度标准差
+6. 平均加热功率
+7. 冷阱温度
+8. 干燥速率
+9. 温度变化率
+10. 真空度变化率
+11. 累计加热能量
+
+**主成分数**：6个
+
+**预测输出**：
+- 水分含量 (%)
+- 复溶时间 (min)
+
+## 数据库设计
+
+### 超表 (Hypertable)
+
+**telemetry** - 遥测数据表
+- timestamp (TIMESTAMPTZ)
+- device_id (INT)
+- shelf_id (INT)
+- temperatures (FLOAT8[8])
+- vacuum_levels (FLOAT8[2])
+- cold_trap_temp (FLOAT8)
+- heating_powers (FLOAT8[8])
+
+### 连续聚合视图
+
+**telemetry_minute** - 分钟级聚合
+- 每分钟的平均温度、平均真空度、平均功率
+- 自动实时聚合
+
+### 其他表
+
+- **devices** - 设备信息表
+- **shelves** - 搁板信息表
+- **control_commands** - 控制指令表
+- **prediction_results** - 预测结果表
+- **alarms** - 告警表
+- **system_config** - 系统配置表
+
+## 告警配置
+
+| 告警类型 | 阈值 | 严重级别 | 冷却时间 |
+|---------|------|---------|---------|
+| 温差超限 | > 1.0℃ | Warning | 30s |
+| 真空度异常 | < 0.0001Pa 或 > 0.1Pa | Warning | 30s |
+| 冷阱温度过高 | > -50℃ | Critical | 30s |
+| 质量预警 | 水分>3.0% 或 复溶>5min | Warning | 60s |
+
+## MQTT告警消息格式
+
 ```json
 {
-  "wellId": "Z-0001",
-  "wellType": "INJECTION",
-  "reportTime": "2024-01-01T08:00:00",
-  "waterVolume": 125.5,
-  "injectionPressure": 22.3,
-  "absorptionIndex": 4.2
+  "alarm_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "device_id": 1,
+  "shelf_id": 3,
+  "alarm_type": "temperature_diff",
+  "severity": "critical",
+  "message": "搁板3温差1.5℃，超过阈值1.0℃",
+  "metrics": {
+    "temperature_diff": 1.5,
+    "threshold": 1.0,
+    "temperatures": [-52.1, -51.8, -50.5, -52.0, -51.9, -51.7, -52.2, -51.9]
+  }
 }
 ```
 
-**采油井数据**：
-```json
-{
-  "wellId": "C-0001",
-  "wellType": "PRODUCTION",
-  "reportTime": "2024-01-01T08:00:00",
-  "fluidVolume": 85.2,
-  "oilVolume": 12.8,
-  "waterCut": 85.0,
-  "fluidLevel": 1250.5
-}
+## 性能指标
+
+- 数据采集延迟：< 1s
+- 控制计算时间：< 100ms
+- 预测计算时间：< 500ms
+- 前端渲染帧率：60fps
+- 支持并发连接：> 1000
+
+## 开发说明
+
+### 添加新的控制算法
+
+在 `backend/app/services/control.py` 中继承 `BaseController` 类：
+
+```python
+class MyController(BaseController):
+    def calculate(self, current_temp: float, avg_temp: float = None) -> float:
+        # 实现你的控制算法
+        pass
 ```
 
-### MQTT告警推送格式
+### 添加新的预测模型
 
-**主题**：`oilfield/alarm`
+在 `backend/app/services/prediction.py` 中扩展 `PLSPredictor` 或添加新的预测器类。
 
-```json
-{
-  "id": 1,
-  "wellId": "C-0001",
-  "alarmLevel": "LEVEL_1",
-  "alarmType": "WATER_CUT_RISE",
-  "alarmMessage": "采油井C-0001含水率月上升8.5%，超过5%阈值",
-  "alarmTime": "2024-01-01T08:00:00",
-  "threshold": 5.0,
-  "actualValue": 8.5
-}
-```
+### 前端组件开发
 
----
+组件位于 `frontend/src/components/`，使用 TypeScript + React Hooks。
 
-## 常见问题
+## 故障排查
 
-### 1. 数据库连接失败
-- 检查PostgreSQL服务是否启动
-- 确认PostGIS扩展已安装
-- 验证用户名密码和端口配置
+### 后端无法启动
+1. 检查数据库连接配置
+2. 确认TimescaleDB扩展已安装
+3. 检查端口8000是否被占用
 
-### 2. MQTT连接失败
-- 检查EMQX/Mosquitto服务是否启动
-- 确认防火墙已开放1883端口
-- 验证MQTT用户名密码配置
+### 前端无法连接后端
+1. 检查后端服务是否启动
+2. 确认CORS配置正确
+3. 检查 `.env` 中的 `VITE_API_URL`
 
-### 3. 调配优化执行失败
-- 检查是否有足够的历史数据（建议>30天）
-- 查看日志确认线性规划求解是否收敛
-- 确认井数据完整性
-
-### 4. 前端地图不显示
-- 检查Leaflet CDN是否可访问
-- 确认浏览器控制台无CORS错误
-- 检查后端API是否正常响应
-
----
-
-## 性能优化建议
-
-1. **数据库层**：
-   - 为日期字段创建B-tree索引
-   - 为空间字段创建GiST索引
-   - 定期VACUUM ANALYZE优化查询性能
-
-2. **后端层**：
-   - 使用Redis缓存热点数据（井列表、最新数据）
-   - 批量操作减少数据库交互
-   - 异步处理MQTT数据上报
-
-3. **前端层**：
-   - 数据按需加载，避免一次性加载所有历史数据
-   - Canvas绘制使用requestAnimationFrame
-   - 图表数据抽样展示
-
----
+### MQTT连接失败
+1. 确认MQTT Broker已启动
+2. 检查连接配置（主机、端口、用户名、密码）
+3. 查看后端日志获取详细错误信息
 
 ## License
 
 MIT License
+
+## 联系方式
+
+如有问题，请提交Issue或联系技术支持团队。
