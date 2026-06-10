@@ -1,0 +1,55 @@
+# Builder stage - 编译依赖
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt /tmp/requirements.txt
+
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r /tmp/requirements.txt \
+    && pip wheel --no-cache-dir --wheel-dir /wheels \
+        gunicorn==21.2.0 \
+        uvicorn[standard]==0.24.0
+
+# Runtime stage - 运行阶段
+FROM python:3.11-slim AS runtime
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache /wheels/* \
+    && rm -rf /wheels
+
+COPY microservices /app/microservices
+COPY config /app/config
+COPY docker/gunicorn.conf.py /app/gunicorn.conf.py
+
+RUN groupadd -r appuser && useradd -r -g appuser appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+
+CMD ["gunicorn", "-c", "/app/gunicorn.conf.py", "microservices.api_gateway.main:app"]

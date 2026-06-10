@@ -1,0 +1,329 @@
+version: '3.8'
+
+x-common-config: &common-config
+  restart: unless-stopped
+  networks:
+    - freeze-dryer-net
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  timescale-db:
+    <<: *common-config
+    image: timescale/timescaledb:2.13.0-pg16
+    container_name: freeze-dryer-timescaledb
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-freeze_dryer}
+      TIMESCALEDB_TELEMETRY: "off"
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+      - ./database/init_timescaledb.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./database/timescale_config.sql:/docker-entrypoint-initdb.d/01_config.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+      -c timescaledb.enable_amods=on
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=4MB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+
+  redis:
+    <<: *common-config
+    image: redis:7.2-alpine
+    container_name: freeze-dryer-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mqtt-broker:
+    <<: *common-config
+    image: emqx/emqx:5.3.0
+    container_name: freeze-dryer-mqtt
+    environment:
+      EMQX_NAME: freeze-dryer-broker
+      EMQX_HOST: 127.0.0.1
+      EMQX_LISTENERS__TCP__DEFAULT__BIND: 0.0.0.0:1883
+      EMQX_LISTENERS__WS__DEFAULT__BIND: 0.0.0.0:8083
+      EMQX_ALLOW_ANONYMOUS: "true"
+      EMQX_LOG__FILE__LEVEL: warning
+      EMQX_MQTT__MAX_PACKET_SIZE: 1MB
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+      - "18083:18083"
+    volumes:
+      - mqtt-data:/opt/emqx/data
+      - mqtt-log:/opt/emqx/log
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  profinet-simulator:
+    <<: *common-config
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.simulator
+    container_name: freeze-dryer-simulator
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - SIM_NUM_DEVICES=${SIM_NUM_DEVICES:-10}
+      - SIM_NUM_SHELVES=${SIM_NUM_SHELVES:-5}
+      - SIM_TEMP_SENSORS_PER_SHELF=${SIM_TEMP_SENSORS_PER_SHELF:-8}
+      - SIM_VACUUM_SENSORS_PER_SHELF=${SIM_VACUUM_SENSORS_PER_SHELF:-2}
+      - SIM_REPORT_INTERVAL=${SIM_REPORT_INTERVAL:-10}
+      - SIM_ENABLE_ANOMALY=${SIM_ENABLE_ANOMALY:-true}
+      - SIM_ANOMALY_INTERVAL=${SIM_ANOMALY_INTERVAL:-120}
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./backend:/app/backend:ro
+      - ./config:/app/config:ro
+    command: python -m backend.profinet_simulator
+    stdin_open: true
+    tty: true
+
+  profinet-driver:
+    <<: *common-config
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.microservice
+      args:
+        SERVICE_NAME: profinet_driver
+    container_name: freeze-dryer-profinet-driver
+    depends_on:
+      redis:
+        condition: service_healthy
+      profinet-simulator:
+        condition: service_started
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - CONFIG_PATH=/app/config
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./microservices:/app/microservices:ro
+      - ./config:/app/config:ro
+
+  temp-controller:
+    <<: *common-config
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.microservice
+      args:
+        SERVICE_NAME: temp_controller
+    container_name: freeze-dryer-temp-controller
+    depends_on:
+      redis:
+        condition: service_healthy
+      profinet-driver:
+        condition: service_started
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - CONFIG_PATH=/app/config
+      - CONTROL_INTERVAL=${CONTROL_INTERVAL:-10}
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./microservices:/app/microservices:ro
+      - ./config:/app/config:ro
+      - ./backend/app/services:/app/backend/app/services:ro
+
+  quality-predictor:
+    <<: *common-config
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.microservice
+      args:
+        SERVICE_NAME: quality_predictor
+    container_name: freeze-dryer-quality-predictor
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescale-db:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@timescale-db:5432/${POSTGRES_DB:-freeze_dryer}
+      - CONFIG_PATH=/app/config
+      - PREDICTION_INTERVAL=${PREDICTION_INTERVAL:-60}
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./microservices:/app/microservices:ro
+      - ./config:/app/config:ro
+      - ./backend/app/services:/app/backend/app/services:ro
+
+  alarm-publisher:
+    <<: *common-config
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.microservice
+      args:
+        SERVICE_NAME: alarm_publisher
+    container_name: freeze-dryer-alarm-publisher
+    depends_on:
+      redis:
+        condition: service_healthy
+      mqtt-broker:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - MQTT_HOST=mqtt-broker
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - CONFIG_PATH=/app/config
+      - ALARM_CHECK_INTERVAL=${ALARM_CHECK_INTERVAL:-10}
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./microservices:/app/microservices:ro
+      - ./config:/app/config:ro
+      - ./backend/app/services:/app/backend/app/services:ro
+
+  db-writer:
+    <<: *common-config
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.microservice
+      args:
+        SERVICE_NAME: db_writer
+    container_name: freeze-dryer-db-writer
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescale-db:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@timescale-db:5432/${POSTGRES_DB:-freeze_dryer}
+      - DB_BATCH_SIZE=${DB_BATCH_SIZE:-50}
+      - DB_FLUSH_INTERVAL=${DB_FLUSH_INTERVAL:-10}
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./microservices:/app/microservices:ro
+
+  api-gateway:
+    <<: *common-config
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api-gateway
+    container_name: freeze-dryer-api-gateway
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescale-db:
+        condition: service_healthy
+      profinet-driver:
+        condition: service_started
+      temp-controller:
+        condition: service_started
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@timescale-db:5432/${POSTGRES_DB:-freeze_dryer}
+      - CONFIG_PATH=/app/config
+      - GUNICORN_WORKERS=${GUNICORN_WORKERS:-4}
+      - GUNICORN_TIMEOUT=${GUNICORN_TIMEOUT:-120}
+      - PORT=8000
+      - LOG_LEVEL=INFO
+    expose:
+      - "8000"
+    volumes:
+      - ./microservices:/app/microservices:ro
+      - ./config:/app/config:ro
+
+  frontend:
+    <<: *common-config
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    container_name: freeze-dryer-frontend
+    depends_on:
+      api-gateway:
+        condition: service_started
+    expose:
+      - "80"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - frontend-dist:/usr/share/nginx/html
+
+  nginx:
+    <<: *common-config
+    image: nginx:1.25-alpine
+    container_name: freeze-dryer-nginx
+    depends_on:
+      api-gateway:
+        condition: service_started
+      frontend:
+        condition: service_started
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - frontend-dist:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  timescale-data:
+    name: freeze-dryer-timescale-data
+  redis-data:
+    name: freeze-dryer-redis-data
+  mqtt-data:
+    name: freeze-dryer-mqtt-data
+  mqtt-log:
+    name: freeze-dryer-mqtt-log
+  frontend-dist:
+    name: freeze-dryer-frontend-dist
+
+networks:
+  freeze-dryer-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
